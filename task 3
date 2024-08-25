@@ -1,0 +1,92 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from keras.preprocessing import image
+from keras.applications import ResNet50
+from keras.models import Model
+from keras.preprocessing.sequence import pad_sequences
+from keras.layers import Input, Embedding, LSTM, Dense
+from keras.preprocessing.text import Tokenizer
+import tensorflow as tf
+import os
+
+# Load the pre-trained ResNet model
+resnet_model = ResNet50(weights='imagenet', include_top=False, pooling='avg')
+
+# Function to extract features from an image
+def extract_features(img_path):
+    img = image.load_img(img_path, target_size=(224, 224))
+    img_array = image.img_to_array(img)
+    img_array = np.expand_dims(img_array, axis=0)
+    img_array = tf.keras.applications.resnet50.preprocess_input(img_array)
+    features = resnet_model.predict(img_array)
+    return features
+
+# Sample dataset (replace with your actual dataset)
+image_captions = {
+    "image1.jpg": "A dog playing in the park.",
+    "image2.jpg": "A cat sitting on a couch.",
+    "image3.jpg": "A person riding a bicycle."
+}
+
+# Create a list of images and their captions
+images = list(image_captions.keys())
+captions = list(image_captions.values())
+
+# Tokenize the captions
+tokenizer = Tokenizer()
+tokenizer.fit_on_texts(captions)
+vocab_size = len(tokenizer.word_index) + 1
+
+# Convert captions to sequences and pad them
+sequences = tokenizer.texts_to_sequences(captions)
+max_length = max(len(seq) for seq in sequences)
+sequences = pad_sequences(sequences, maxlen=max_length, padding='post')
+
+# Define the image captioning model
+def create_model(vocab_size, max_length):
+    # Image feature input
+    image_input = Input(shape=(2048,))
+    image_dense = Dense(256, activation='relu')(image_input)
+
+    # Caption input
+    caption_input = Input(shape=(max_length,))
+    caption_embedding = Embedding(vocab_size, 256, mask_zero=True)(caption_input)
+    caption_lstm = LSTM(256)(caption_embedding)
+
+    # Merge the two inputs
+    decoder_input = tf.keras.layers.add([image_dense, caption_lstm])
+    output = Dense(vocab_size, activation='softmax')(decoder_input)
+
+    model = Model(inputs=[image_input, caption_input], outputs=output)
+    model.compile(loss='categorical_crossentropy', optimizer='adam')
+    return model
+
+# Create the model
+model = create_model(vocab_size, max_length)
+
+# Prepare input data
+X_image = np.array([extract_features(img) for img in images])
+X_caption = sequences[:, :-1]  # All but the last word
+y_caption = tf.keras.utils.to_categorical(sequences[:, 1:], num_classes=vocab_size)
+
+# Train the model
+model.fit([X_image, X_caption], y_caption, epochs=100, verbose=1)
+
+# Function to generate captions for new images
+def generate_caption(image_path):
+    features = extract_features(image_path)
+    caption = [tokenizer.word_index['startseq']]  # Start token
+    for _ in range(max_length):
+        sequence = pad_sequences([caption], maxlen=max_length)
+        yhat = model.predict([features, sequence], verbose=0)
+        yhat = np.argmax(yhat)
+        if yhat == 0:  # End token
+            break
+        caption.append(yhat)
+
+    return ' '.join(tokenizer.index_word[i] for i in caption if i > 0)
+
+# Example usage
+new_image_path = "new_image.jpg"  # Replace with your image path
+caption = generate_caption(new_image_path)
+print("Generated Caption:", caption)
